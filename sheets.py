@@ -5,10 +5,32 @@ import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 from utils import parse_data_col, _ajusta_sinal
 
+def _coerce_google_credentials(st):
+    """Accepts both styles of secrets:
+    1) [google].credentials as a JSON string (triple-quoted)
+    2) [google.credentials] as a TOML table (already a dict)
+    3) Or individual keys directly under [google]
+    """
+    google_secrets = st.secrets["google"]
+    creds_raw = google_secrets.get("credentials", {})
+    # Case 2: TOML table -> dict
+    if isinstance(creds_raw, dict):
+        return dict(creds_raw)
+    # Case 1: triple-quoted JSON string
+    if isinstance(creds_raw, str) and creds_raw.strip():
+        return json.loads(creds_raw)
+    # Case 3: individual keys under [google]
+    keys = ["type","project_id","private_key_id","private_key","client_email","client_id",
+            "auth_uri","token_uri","auth_provider_x509_cert_url","client_x509_cert_url","universe_domain"]
+    out = {k: google_secrets[k] for k in keys if k in google_secrets}
+    if out:
+        return out
+    raise RuntimeError("Google credentials not found. Provide [google].credentials (string JSON) or [google.credentials] table.")
+
 def get_sheet(st):
     @st.cache_resource(show_spinner=False)
     def _get_sheet():
-        creds = json.loads(st.secrets["google"]["credentials"])
+        creds = _coerce_google_credentials(st)
         scope = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
@@ -19,10 +41,10 @@ def get_sheet(st):
         return client.open(st.secrets["google"]["sheet_name"])
     return _get_sheet()
 
-def load_main_df(st, sheet):
+def load_main_df(st, spreadsheet):
     @st.cache_data(show_spinner=False)
     def _load():
-        vals = sheet.sheet1.get_all_values()
+        vals = spreadsheet.sheet1.get_all_values()
         base_cols = ["Data","Responsável","Tipo","Descrição","Categoria",
                     "Método de Pagamento/Recebimento","Valor"]
         if not vals: return pd.DataFrame(columns=base_cols)
@@ -85,40 +107,3 @@ def load_main_df(st, sheet):
             df[col] = df[col].astype(str).str.strip()
         return df
     return _load()
-
-def ws_pm(spreadsheet):
-    try:
-        return spreadsheet.worksheet("PagamentosMensais")
-    except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet("PagamentosMensais", rows=400, cols=20)
-        ws.append_row(["Descrição", "Valor padrão", "Dia", "Categoria", "Responsável"])
-        return ws
-
-def load_pm_df(st, spreadsheet):
-    @st.cache_data(show_spinner=False)
-    def _load():
-        import pandas as pd
-        dfpm = pd.DataFrame(ws_pm(spreadsheet).get_all_records(), columns=["Descrição", "Valor padrão", "Dia", "Categoria", "Responsável"])
-        if not dfpm.empty:
-            dfpm["Dia"] = pd.to_numeric(dfpm["Dia"], errors="coerce").fillna(1).astype(int)
-        return dfpm
-    return _load()
-
-def ws_plan(spreadsheet, DESP_CATS):
-    try:
-        return spreadsheet.worksheet("Planejamento")
-    except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet("Planejamento", rows=300, cols=40)
-        ws.append_row(["Ano","Mês","Salário Ricardo","Salário Helena","Extras","Investimentos"] + DESP_CATS)
-        return ws
-
-def load_plan_df(st, spreadsheet, DESP_CATS):
-    @st.cache_data(show_spinner=False)
-    def _load():
-        import pandas as pd
-        return pd.DataFrame(ws_plan(spreadsheet, DESP_CATS).get_all_records())
-    return _load()
-
-def salvar_plan(ws, linha, valores):
-    if linha is not None: ws.update(f"A{linha+2}", [valores])
-    else: ws.append_row(valores)
