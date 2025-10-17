@@ -132,6 +132,14 @@ def _build_google_credentials(st) -> Credentials:
 from google.auth.transport.requests import AuthorizedSession
 
 def get_sheet(st):
+    
+    st.write("Service Account:", g.get("client_email"))
+try:
+    titles = [s.title for s in client.openall()]
+    st.write("Planilhas visíveis:", titles)
+except Exception as e:
+    st.error(f"Erro ao listar planilhas: {e}")
+    
     @st.cache_resource(show_spinner=False)
     def _get_sheet():
         g = st.secrets.get("google", {})
@@ -165,7 +173,7 @@ def get_sheet(st):
                 f"Erro original do gspread: {e}"
             )
         return ss
-    return _get_sheet()
+        return _get_sheet()
 
 
 
