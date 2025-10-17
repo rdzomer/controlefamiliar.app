@@ -129,49 +129,44 @@ def _build_google_credentials(st) -> Credentials:
     return creds
 
 
+from google.auth.transport.requests import AuthorizedSession
+
 def get_sheet(st):
-    """
-    Abre e retorna o objeto Spreadsheet (gspread) pelo nome do ARQUIVO indicado em google.sheet_name.
-    Usa cache_resource para não reconectar a cada execução.
-    """
     @st.cache_resource(show_spinner=False)
     def _get_sheet():
         g = st.secrets.get("google", {})
-        sheet_name = g.get("sheet_name")
-        if not isinstance(sheet_name, str) or not sheet_name.strip():
-            raise RuntimeError(
-                "Defina google.sheet_name no secrets (é o NOME DO ARQUIVO no Google Sheets, ex.: \"Despesas Familiares\")."
-            )
-        sheet_name = sheet_name.strip()
+        sheet_key  = (g.get("sheet_key") or "").strip()
+        sheet_name = (g.get("sheet_name") or "").strip()
 
         creds = _build_google_credentials(st)
 
-        # Autoriza o gspread com google-auth (sem oauth2client)
         try:
-            client = gspread.Client(auth=creds)
-            client.session = gspread.auth.AuthorizedSession(creds)
+            # cria sessão HTTP autenticada
+            authed_session = AuthorizedSession(creds)
+            client = gspread.Client(auth=creds, session=authed_session)
         except Exception as e:
-            raise RuntimeError(
-                "Falha ao inicializar o cliente gspread com google-auth. "
-                f"Erro original: {e}"
-            )
+            raise RuntimeError(f"Falha ao iniciar gspread: {e}")
 
-        # Abre a planilha pelo NOME DO ARQUIVO (não é o nome das abas internas)
         try:
-            ss = client.open(sheet_name)
+            if sheet_key:
+                ss = client.open_by_key(sheet_key)
+            elif sheet_name:
+                ss = client.open(sheet_name)
+            else:
+                raise RuntimeError("Defina google.sheet_key (recomendado) ou google.sheet_name no secrets.")
         except Exception as e:
-            # Mensagem clara para os 2 erros mais comuns: nome errado e permissão faltando
-            client_email = st.secrets["google"].get("client_email", "<service-account>")
+            client_email = g.get("client_email", "<service-account>")
             raise RuntimeError(
-                f"Não foi possível abrir a planilha '{sheet_name}'. "
-                "Confira:\n"
-                f" • O título do ARQUIVO no Google Sheets é exatamente '{sheet_name}' (maiúsculas/minúsculas e espaços contam);\n"
-                f" • O arquivo está COMPARTILHADO como Editor com o service account: {client_email}\n"
+                f"Não foi possível abrir a planilha.\n"
+                f"• ID usado (sheet_key): '{sheet_key}'\n"
+                f"• Título usado (sheet_name): '{sheet_name}'\n"
+                f"• Service account com permissão: {client_email}\n"
+                f"• Verifique se está compartilhado como Editor.\n"
                 f"Erro original do gspread: {e}"
             )
         return ss
-
     return _get_sheet()
+
 
 
 def ensure_worksheet(ss: gspread.Spreadsheet, title: str, headers: List[str]) -> gspread.Worksheet:
