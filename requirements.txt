@@ -1,7 +1,8 @@
 streamlit>=1.36
 pandas>=2.1
 plotly>=5.18
-gspread>=5.12
+gspread>=6.0.0
 oauth2client>=4.1
 python-dateutil>=2.9
 pyarrow>=16.0
+google-auth>=2.0.0
