@@ -1,18 +1,37 @@
-# sheets.py — versão robusta e compatível com google-auth (sem oauth2client)
-# Coloque este arquivo no mesmo caminho que o app importa (ex.: controlefamiliar.app/sheets.py)
-
+# sheets.py — versão completa (google-auth, sem oauth2client) + loaders usados no app
 from __future__ import annotations
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import gspread
 from google.oauth2.service_account import Credentials
+import pandas as pd
 
 
 # Escopos necessários para Google Sheets e Drive (abrir por nome exige Drive)
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
+]
+
+# Cabeçalhos padrão (mantém compatibilidade com o seu projeto)
+_HEADERS_MAIN: List[str] = [
+    "Titular",
+    "Cartao (Final)",
+    "Data",
+    "Estabelecimento",
+    "Parcela",
+    "Valor (R$)",
+    "Categoria",
+]
+
+_HEADERS_PM: List[str] = [
+    "AnoMes",            # ex.: 2025-10
+    "FaturaCartao",      # cartão / final
+    "DataVencimento",
+    "ValorFatura",
+    "StatusPagamento",   # Pago | Em aberto
+    "Obs",
 ]
 
 
@@ -153,3 +172,67 @@ def get_sheet(st):
         return ss
 
     return _get_sheet()
+
+
+def ensure_worksheet(ss: gspread.Spreadsheet, title: str, headers: List[str]) -> gspread.Worksheet:
+    """
+    Garante que exista uma worksheet com 'title' e, se recém-criada ou vazia,
+    escreve a linha de cabeçalhos em A1:Z1 conforme 'headers'.
+    """
+    try:
+        ws = ss.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = ss.add_worksheet(title=title, rows=1000, cols=max(10, len(headers)))
+        ws.append_row(headers, value_input_option="RAW")
+        return ws
+
+    # Se a aba existe mas está vazia (sem cabeçalhos), coloca-os
+    values = ws.get_all_values()
+    if not values:
+        ws.append_row(headers, value_input_option="RAW")
+    else:
+        first_row = values[0]
+        # Se o cabeçalho não bate, não sobrescreve: apenas garante que há algo
+        if len(first_row) < len(headers) and first_row == []:
+            ws.update(f"A1:{chr(64+len(headers))}1", [headers])
+
+    return ws
+
+
+def _ws_to_df(ws: gspread.Worksheet, headers: List[str]) -> pd.DataFrame:
+    """
+    Converte worksheet em DataFrame. Se a aba tiver só cabeçalho ou estiver vazia,
+    devolve DF vazio com as colunas padrão 'headers'.
+    """
+    records = ws.get_all_records(numericise_ignore=["all"])
+    if not records:
+        return pd.DataFrame(columns=headers)
+    df = pd.DataFrame.from_records(records)
+    # Garante a ordem/colunas esperadas
+    for col in headers:
+        if col not in df.columns:
+            df[col] = pd.NA
+    df = df[headers]
+    return df
+
+
+def load_main_df(st) -> pd.DataFrame:
+    """
+    Carrega (ou cria) a aba principal de lançamentos.
+    Nome padrão: 'Lancamentos'
+    Colunas padrão em _HEADERS_MAIN.
+    """
+    ss = get_sheet(st)
+    ws = ensure_worksheet(ss, title="Lancamentos", headers=_HEADERS_MAIN)
+    return _ws_to_df(ws, _HEADERS_MAIN)
+
+
+def load_pm_df(st) -> pd.DataFrame:
+    """
+    Carrega (ou cria) a aba de Pagamentos Mensais.
+    Nome padrão: 'PagamentosMensais'
+    Colunas padrão em _HEADERS_PM.
+    """
+    ss = get_sheet(st)
+    ws = ensure_worksheet(ss, title="PagamentosMensais", headers=_HEADERS_PM)
+    return _ws_to_df(ws, _HEADERS_PM)
