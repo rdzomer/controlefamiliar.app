@@ -1,7 +1,7 @@
 
 from utils import fmt_currency
 from constants import DESP_CATS
-from sheets import ws_plan, load_plan_df, salvar_plan
+from sheets import get_sheet, ensure_worksheet, _ws_to_df
 
 def render(st, spreadsheet, df_desp, sel_ano, sel_mes):
     st.header("📋 Planejamento Financeiro Mensal")
