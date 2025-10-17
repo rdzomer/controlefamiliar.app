@@ -1,37 +1,48 @@
-# sheets.py — versão robusta (sem oauth2client), credenciais normalizadas
+# sheets.py — versão robusta e compatível com google-auth (sem oauth2client)
+# Coloque este arquivo no mesmo caminho que o app importa (ex.: controlefamiliar.app/sheets.py)
+
+from __future__ import annotations
 import json
+from typing import Dict, Any
+
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Escopos necessários para ler/editar planilhas
-_SCOPE = [
+
+# Escopos necessários para Google Sheets e Drive (abrir por nome exige Drive)
+_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 
-def _coerce_google_credentials(st):
+def _load_google_secrets(st) -> Dict[str, Any]:
     """
-    Lê st.secrets["google"] e devolve um objeto Credentials do google-auth,
-    normalizando os campos e tolerando 2 formatos:
-      (a) campo "credentials" com o JSON inteiro (string)
-      (b) chaves soltas (type, project_id, private_key_id, private_key, etc.)
+    Lê st.secrets['google'] e retorna um dicionário com as credenciais.
+    Aceita dois formatos:
+      (A) google.credentials = "<JSON do service account>"
+      (B) chaves soltas em [google] (type, project_id, private_key_id, private_key, etc.)
+    Normaliza strings (strip) e garante type="service_account".
+    Levanta RuntimeError com mensagem clara se faltar algo.
     """
     if "google" not in st.secrets:
-        raise RuntimeError("Segredos do Google ausentes em st.secrets['google'].")
+        raise RuntimeError("Segredos do Google não encontrados. Defina a seção [google] em secrets.toml.")
 
     g = st.secrets["google"]
 
-    # 1) Se vier um JSON bruto em "credentials", tenta parsear
+    # 1) Tenta formato A (JSON em 'credentials')
     data = None
     creds_raw = g.get("credentials")
     if isinstance(creds_raw, str) and creds_raw.strip():
         try:
             data = json.loads(creds_raw)
         except Exception as e:
-            raise RuntimeError(f"credentials JSON inválido em st.secrets['google.credentials']: {e}")
+            raise RuntimeError(
+                "O campo google.credentials não contém um JSON válido. "
+                f"Erro ao decodificar: {e}"
+            )
 
-    # 2) Caso contrário, monta a partir das chaves soltas de [google]
+    # 2) Senão, usa formato B (chaves soltas)
     if data is None:
         data = {
             "type": g.get("type"),
@@ -40,21 +51,22 @@ def _coerce_google_credentials(st):
             "private_key": g.get("private_key"),
             "client_email": g.get("client_email"),
             "client_id": g.get("client_id"),
-            "auth_uri": g.get("auth_uri"),
-            "token_uri": g.get("token_uri"),
-            "auth_provider_x509_cert_url": g.get("auth_provider_x509_cert_url"),
+            "auth_uri": g.get("auth_uri") or "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": g.get("token_uri") or "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": g.get("auth_provider_x509_cert_url")
+                or "https://www.googleapis.com/oauth2/v1/certs",
             "client_x509_cert_url": g.get("client_x509_cert_url"),
         }
 
-    # 3) Normaliza strings (remove espaços/CR/LF nas extremidades)
+    # 3) Normaliza strings
     for k, v in list(data.items()):
         if isinstance(v, str):
             data[k] = v.strip()
 
-    # 4) Garante o tipo correto (evita o 'Unexpected credentials type')
+    # 4) Garante tipo correto (evita 'Unexpected credentials type')
     data["type"] = "service_account"
 
-    # 5) Validação mínima e mensagens claras
+    # 5) Validação mínima
     required = [
         "project_id",
         "private_key_id",
@@ -65,43 +77,78 @@ def _coerce_google_credentials(st):
     ]
     missing = [k for k in required if not data.get(k)]
     if missing:
-        raise RuntimeError(f"Faltam campos em st.secrets['google']: {', '.join(missing)}")
-
-    try:
-        return Credentials.from_service_account_info(data, scopes=_SCOPE)
-    except Exception as e:
-        # Mensagem mais clara caso a chave quebre por formatação
         raise RuntimeError(
-            "Falha ao criar Credentials. Verifique se o bloco private_key está completo "
-            "(BEGIN ... END) com QUEBRAS DE LINHA reais e se o e-mail do service account "
-            "tem acesso à planilha. Erro original: {}".format(e)
+            "Faltam campos obrigatórios em [google] no secrets: "
+            + ", ".join(missing)
         )
+
+    # 6) Checagem da chave privada (BEGIN/END)
+    pk = data.get("private_key", "")
+    if "BEGIN PRIVATE KEY" not in pk or "END PRIVATE KEY" not in pk:
+        raise RuntimeError(
+            "O bloco private_key parece inválido. Cole o conteúdo completo entre "
+            'aspas triplas """-----BEGIN PRIVATE KEY----- ... -----END PRIVATE KEY-----""" '
+            "com QUEBRAS DE LINHA reais (sem \\n)."
+        )
+
+    return data
+
+
+def _build_google_credentials(st) -> Credentials:
+    """
+    Constrói um objeto Credentials (google-auth) a partir dos segredos normalizados.
+    """
+    info = _load_google_secrets(st)
+    try:
+        creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+    except Exception as e:
+        raise RuntimeError(
+            "Falha ao criar Credentials a partir dos segredos. "
+            "Verifique se todos os campos estão corretos e se a private_key está completa.\n"
+            f"Erro original: {e}"
+        )
+    return creds
 
 
 def get_sheet(st):
     """
-    Retorna o objeto Spreadsheet já aberto pelo nome definido em st.secrets['google']['sheet_name'].
-    Usa cache do Streamlit para não reconectar toda hora.
+    Abre e retorna o objeto Spreadsheet (gspread) pelo nome do ARQUIVO indicado em google.sheet_name.
+    Usa cache_resource para não reconectar a cada execução.
     """
     @st.cache_resource(show_spinner=False)
     def _get_sheet():
-        gsecrets = st.secrets["google"]
-        sheet_name = gsecrets.get("sheet_name")
-        if not sheet_name:
-            raise RuntimeError("Defina google.sheet_name em secrets (é o NOME DO ARQUIVO no Google Sheets).")
+        g = st.secrets.get("google", {})
+        sheet_name = g.get("sheet_name")
+        if not isinstance(sheet_name, str) or not sheet_name.strip():
+            raise RuntimeError(
+                "Defina google.sheet_name no secrets (é o NOME DO ARQUIVO no Google Sheets, ex.: \"Despesas Familiares\")."
+            )
+        sheet_name = sheet_name.strip()
 
-        creds = _coerce_google_credentials(st)
-        client = gspread.authorize(creds)
+        creds = _build_google_credentials(st)
 
+        # Autoriza o gspread com google-auth (sem oauth2client)
         try:
-            # Abre pelo nome do ARQUIVO do Google Sheets
-            ss = client.open(sheet_name)
+            client = gspread.Client(auth=creds)
+            client.session = gspread.auth.AuthorizedSession(creds)
         except Exception as e:
             raise RuntimeError(
-                f"Não foi possível abrir a planilha '{sheet_name}'. "
-                "Confirme o título do arquivo no Google Sheets e compartilhe-o como Editor com "
-                f"o service account: {st.secrets['google'].get('client_email')}. "
+                "Falha ao inicializar o cliente gspread com google-auth. "
                 f"Erro original: {e}"
+            )
+
+        # Abre a planilha pelo NOME DO ARQUIVO (não é o nome das abas internas)
+        try:
+            ss = client.open(sheet_name)
+        except Exception as e:
+            # Mensagem clara para os 2 erros mais comuns: nome errado e permissão faltando
+            client_email = st.secrets["google"].get("client_email", "<service-account>")
+            raise RuntimeError(
+                f"Não foi possível abrir a planilha '{sheet_name}'. "
+                "Confira:\n"
+                f" • O título do ARQUIVO no Google Sheets é exatamente '{sheet_name}' (maiúsculas/minúsculas e espaços contam);\n"
+                f" • O arquivo está COMPARTILHADO como Editor com o service account: {client_email}\n"
+                f"Erro original do gspread: {e}"
             )
         return ss
 
