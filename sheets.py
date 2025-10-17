@@ -5,8 +5,9 @@ import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 from utils import parse_data_col, _ajusta_sinal
 
+# --------------------------- Secrets handling --------------------------- #
 def _coerce_google_credentials(st):
-    """Accepts both styles of secrets:
+    """Accept secrets in multiple styles:
     1) [google].credentials as a JSON string (triple-quoted)
     2) [google.credentials] as a TOML table (already a dict)
     3) Or individual keys directly under [google]
@@ -25,8 +26,9 @@ def _coerce_google_credentials(st):
     out = {k: google_secrets[k] for k in keys if k in google_secrets}
     if out:
         return out
-    raise RuntimeError("Google credentials not found. Provide [google].credentials (string JSON) or [google.credentials] table.")
+    raise RuntimeError("Google credentials not found. Provide [google].credentials (string JSON) or a [google.credentials] table.")
 
+# --------------------------- Google Sheets client ----------------------- #
 def get_sheet(st):
     @st.cache_resource(show_spinner=False)
     def _get_sheet():
@@ -41,6 +43,7 @@ def get_sheet(st):
         return client.open(st.secrets["google"]["sheet_name"])
     return _get_sheet()
 
+# --------------------------- Base data read ----------------------------- #
 def load_main_df(st, spreadsheet):
     @st.cache_data(show_spinner=False)
     def _load():
@@ -107,3 +110,41 @@ def load_main_df(st, spreadsheet):
             df[col] = df[col].astype(str).str.strip()
         return df
     return _load()
+
+# --------------------------- Pagamentos Mensais ------------------------- #
+def ws_pm(spreadsheet):
+    try:
+        return spreadsheet.worksheet("PagamentosMensais")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet("PagamentosMensais", rows=400, cols=20)
+        ws.append_row(["Descrição", "Valor padrão", "Dia", "Categoria", "Responsável"])
+        return ws
+
+def load_pm_df(st, spreadsheet):
+    @st.cache_data(show_spinner=False)
+    def _load():
+        dfpm = pd.DataFrame(ws_pm(spreadsheet).get_all_records(),
+                            columns=["Descrição", "Valor padrão", "Dia", "Categoria", "Responsável"])
+        if not dfpm.empty:
+            dfpm["Dia"] = pd.to_numeric(dfpm["Dia"], errors="coerce").fillna(1).astype(int)
+        return dfpm
+    return _load()
+
+# --------------------------- Planejamento ------------------------------- #
+def ws_plan(spreadsheet, DESP_CATS):
+    try:
+        return spreadsheet.worksheet("Planejamento")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet("Planejamento", rows=300, cols=40)
+        ws.append_row(["Ano","Mês","Salário Ricardo","Salário Helena","Extras","Investimentos"] + DESP_CATS)
+        return ws
+
+def load_plan_df(st, spreadsheet, DESP_CATS):
+    @st.cache_data(show_spinner=False)
+    def _load():
+        return pd.DataFrame(ws_plan(spreadsheet, DESP_CATS).get_all_records())
+    return _load()
+
+def salvar_plan(ws, linha, valores):
+    if linha is not None: ws.update(f"A{linha+2}", [valores])
+    else: ws.append_row(valores)
