@@ -219,23 +219,22 @@ def _ws_to_df(ws: gspread.Worksheet, headers: List[str]) -> pd.DataFrame:
     return df
 
 
-def load_main_df(st) -> pd.DataFrame:
+def load_main_df(st, ss=None) -> pd.DataFrame:
+    """Carrega a aba 'Lancamentos' como DataFrame.
+    Aceita opcionalmente o Spreadsheet já aberto (ss) para compatibilidade.
     """
-    Carrega (ou cria) a aba principal de lançamentos.
-    Nome padrão: 'Lancamentos'
-    Colunas padrão em _HEADERS_MAIN.
-    """
-    ss = get_sheet(st)
+    if ss is None:
+        ss = get_sheet(st)
     ws = ensure_worksheet(ss, title="Lancamentos", headers=_HEADERS_MAIN)
     return _ws_to_df(ws, _HEADERS_MAIN)
 
 
-def load_pm_df(st) -> pd.DataFrame:
+def load_pm_df(st, ss=None) -> pd.DataFrame:
+    """Carrega a aba 'PagamentosMensais' como DataFrame.
+    Aceita opcionalmente o Spreadsheet já aberto (ss) para compatibilidade.
     """
-    Carrega (ou cria) a aba de Pagamentos Mensais.
-    Nome padrão: 'PagamentosMensais'
-    Colunas padrão em _HEADERS_PM.
-    """
-    ss = get_sheet(st)
+    if ss is None:
+        ss = get_sheet(st)
     ws = ensure_worksheet(ss, title="PagamentosMensais", headers=_HEADERS_PM)
     return _ws_to_df(ws, _HEADERS_PM)
+
